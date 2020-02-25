@@ -47,11 +47,7 @@ class GitHubClientMixin(ApiClient):
         return self.get(u'/repos/{}'.format(repo))
 
     def get_repositories(self):
-        repositories = self.get(
-            '/installation/repositories',
-            params={'per_page': 100},
-        )
-        return repositories['repositories']
+        return _paging_get_repositories(self)
 
     def search_repositories(self, query):
         return self.get(
@@ -140,3 +136,18 @@ class GitHubAppsClient(GitHubClientMixin):
     def __init__(self, integration):
         self.integration = integration
         super(GitHubAppsClient, self).__init__()
+
+
+def _paging_get_repositories(client_mixin):
+    # See: https://developer.github.com/v3/apps/installations/#list-repositories
+    # In particular, paging is indicated via the `Link:` header, e.g.
+    #   Link: <https://api.github.com/resource?page=2>; rel="next",
+    #         <https://api.github.com/resource?page=5>; rel="last"
+    # See: https://developer.github.com/v3/#pagination, in particular, the
+    # `per_page` query parameter provides a way to limit the number of results
+    # returned.
+    repositories = client_mixin.get(
+        '/installation/repositories',
+        params={'per_page': 100},
+    )
+    return repositories['repositories']
