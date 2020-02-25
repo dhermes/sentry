@@ -1,4 +1,5 @@
 from __future__ import absolute_import
+import copy
 
 from django import forms
 from django.utils.translation import ugettext_lazy as _
@@ -13,6 +14,7 @@ from .utils import build_attachment
 MEMBER_PREFIX = '@'
 CHANNEL_PREFIX = '#'
 strip_channel_chars = ''.join([MEMBER_PREFIX, CHANNEL_PREFIX])
+_MAX_ITERATIONS = 100
 
 
 class SlackNotifyServiceForm(forms.Form):
@@ -182,13 +184,9 @@ class SlackNotifyServiceAction(EventAction):
             'exclude_members': True,
         })
 
-        resp = session.get('https://slack.com/api/channels.list', params=channels_payload)
-        resp = resp.json()
-        if not resp.get('ok'):
-            self.logger.info('rule.slack.channel_list_failed', extra={'error': resp.get('error')})
+        channel_id, did_error = _find_matching_channel(self.logger, session, name, channels_payload)
+        if did_error:
             return None
-
-        channel_id = {c['name']: c['id'] for c in resp['channels']}.get(name)
 
         if channel_id:
             return (CHANNEL_PREFIX, channel_id)
@@ -218,3 +216,34 @@ class SlackNotifyServiceAction(EventAction):
             return (MEMBER_PREFIX, member_id)
 
         return None
+
+
+def _find_matching_channel(logger, session, name, original_params):
+    # See: https://api.slack.com/methods/channels.list
+    did_error = False
+
+    next_params = copy.deepcopy(original_params)
+    # NOTE: Prefer a bounded `for` loop over a `while` loop.
+    for _ in range(_MAX_ITERATIONS):
+        if next_params is None:
+            break
+
+        resp = session.get('https://slack.com/api/channels.list', params=next_params)
+        resp = resp.json()
+        if not resp.get('ok'):
+            logger.info('rule.slack.channel_list_failed', extra={'error': resp.get('error')})
+            did_error = True
+            return None, did_error
+
+        for c in resp['channels']:
+            if c['name'] == name:
+                return c['id'], did_error
+
+        next_cursor = resp.get('response_metadata', {}).get('next_cursor')
+        if next_cursor is None:
+            next_params = None
+        else:
+            # NOTE: This intentionally modifies `next_params` in place.
+            next_params['cursor'] = next_cursor
+
+    return None, did_error
