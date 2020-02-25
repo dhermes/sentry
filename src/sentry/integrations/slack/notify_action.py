@@ -200,13 +200,9 @@ class SlackNotifyServiceAction(EventAction):
             return (CHANNEL_PREFIX, group_id)
 
         # Channel may actually be a user
-        resp = session.get('https://slack.com/api/users.list', params=token_payload)
-        resp = resp.json()
-        if not resp.get('ok'):
-            self.logger.info('rule.slack.user_list_failed', extra={'error': resp.get('error')})
+        member_id, did_error = _find_matching_user(self.logger, session, name, channels_payload)
+        if did_error:
             return None
-
-        member_id = {c['name']: c['id'] for c in resp['members']}.get(name)
 
         if member_id:
             return (MEMBER_PREFIX, member_id)
@@ -268,6 +264,18 @@ def _find_matching_group(logger, session, name, original_params):
         session,
         'https://slack.com/api/groups.list',
         'groups',
+        name,
+        original_params,
+    )
+
+
+def _find_matching_user(logger, session, name, original_params):
+    return _find_matching_conversation(
+        logger,
+        'rule.slack.user_list_failed',
+        session,
+        'https://slack.com/api/users.list',
+        'members',
         name,
         original_params,
     )
