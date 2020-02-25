@@ -1,9 +1,18 @@
 from __future__ import absolute_import
+from __future__ import print_function
 
 from datetime import datetime
+import sys
 
 from sentry.integrations.github.utils import get_jwt
 from sentry.integrations.client import ApiClient
+
+
+_BAD_NEXT_REL = (
+    'Link header {!r} included rel="next" {!r} that did not start '
+    'with base URL {!r}'
+)
+_MAX_ITERATIONS = 100
 
 
 class GitHubClientMixin(ApiClient):
@@ -143,11 +152,43 @@ def _paging_get_repositories(client_mixin):
     # In particular, paging is indicated via the `Link:` header, e.g.
     #   Link: <https://api.github.com/resource?page=2>; rel="next",
     #         <https://api.github.com/resource?page=5>; rel="last"
+    all_repositories = []
     # See: https://developer.github.com/v3/#pagination, in particular, the
     # `per_page` query parameter provides a way to limit the number of results
     # returned.
-    repositories = client_mixin.get(
+    response = client_mixin.get(
         '/installation/repositories',
         params={'per_page': 100},
     )
-    return repositories['repositories']
+    all_repositories.extend(response['repositories'])
+
+    next_url = _get_rel_next(client_mixin.base_url, response)
+    # NOTE: Prefer a bounded `for` loop over a `while` loop.
+    for _ in range(_MAX_ITERATIONS):
+        if next_url is None:
+            break
+
+        response = client_mixin.get(next_url)
+        all_repositories.extend(response['repositories'])
+        next_url = _get_rel_next(client_mixin.base_url, response)
+
+    return all_repositories
+
+
+def _get_rel_next(base_url, response):
+    # >>> r.headers['Link']
+    # '<https://.../api/v3/user/repos?per_page=3&page=2>; rel="next", <https://.../api/v3/user/repos?per_page=3&page=167>; rel="last"'
+
+    # For `response.rel`, see `src/sentry/integrations/client.py:BaseApiResponse.rel`.
+    rel_map = getattr(response, 'rel', {})
+    if 'next' not in rel_map:
+        return None
+
+    next_url = rel_map['next']
+    if not next_url.startswith(base_url):
+        message = _BAD_NEXT_REL.format(response.headers.get('Link'), next_url, base_url)
+        print(message, file=sys.stderr)
+        return None
+
+    _, relative_url = next_url.split(base_url, 1)
+    return relative_url
