@@ -214,8 +214,11 @@ class SlackNotifyServiceAction(EventAction):
         return None
 
 
-def _find_matching_channel(logger, session, name, original_params):
-    # See: https://api.slack.com/methods/channels.list
+def _find_matching_conversation(logger, logger_message, session, url, resource_type, name, original_params):
+    # See:
+    # - https://api.slack.com/methods/channels.list
+    # - https://api.slack.com/methods/groups.list
+    # - https://api.slack.com/methods/users.list
     # WARNING: This function does not do any handling for rate limiting.
     did_error = False
 
@@ -225,14 +228,14 @@ def _find_matching_channel(logger, session, name, original_params):
         if next_params is None:
             break
 
-        resp = session.get('https://slack.com/api/channels.list', params=next_params)
+        resp = session.get(url, params=next_params)
         resp = resp.json()
         if not resp.get('ok'):
-            logger.info('rule.slack.channel_list_failed', extra={'error': resp.get('error')})
+            logger.info(logger_message, extra={'error': resp.get('error')})
             did_error = True
             return None, did_error
 
-        for c in resp['channels']:
+        for c in resp[resource_type]:
             if c['name'] == name:
                 return c['id'], did_error
 
@@ -244,36 +247,27 @@ def _find_matching_channel(logger, session, name, original_params):
             next_params['cursor'] = next_cursor
 
     return None, did_error
+
+
+def _find_matching_channel(logger, session, name, original_params):
+    return _find_matching_conversation(
+        logger,
+        'rule.slack.channel_list_failed',
+        session,
+        'https://slack.com/api/channels.list',
+        'channels',
+        name,
+        original_params,
+    )
 
 
 def _find_matching_group(logger, session, name, original_params):
-    # See: https://api.slack.com/methods/groups.list
-    # WARNING: This function does not do any handling for rate limiting.
-    # NOTE: This is mostly copied from `_find_matching_channel`.
-    did_error = False
-
-    next_params = copy.deepcopy(original_params)
-    # NOTE: Prefer a bounded `for` loop over a `while` loop.
-    for _ in range(_MAX_ITERATIONS):
-        if next_params is None:
-            break
-
-        resp = session.get('https://slack.com/api/groups.list', params=next_params)
-        resp = resp.json()
-        if not resp.get('ok'):
-            logger.info('rule.slack.group_list_failed', extra={'error': resp.get('error')})
-            did_error = True
-            return None, did_error
-
-        for c in resp['groups']:
-            if c['name'] == name:
-                return c['id'], did_error
-
-        next_cursor = resp.get('response_metadata', {}).get('next_cursor')
-        if next_cursor is None:
-            next_params = None
-        else:
-            # NOTE: This intentionally modifies `next_params` in place.
-            next_params['cursor'] = next_cursor
-
-    return None, did_error
+    return _find_matching_conversation(
+        logger,
+        'rule.slack.group_list_failed',
+        session,
+        'https://slack.com/api/groups.list',
+        'groups',
+        name,
+        original_params,
+    )
