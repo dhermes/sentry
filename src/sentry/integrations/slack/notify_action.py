@@ -192,13 +192,9 @@ class SlackNotifyServiceAction(EventAction):
             return (CHANNEL_PREFIX, channel_id)
 
         # Channel may be private
-        resp = session.get('https://slack.com/api/groups.list', params=channels_payload)
-        resp = resp.json()
-        if not resp.get('ok'):
-            self.logger.info('rule.slack.group_list_failed', extra={'error': resp.get('error')})
+        group_id, did_error = _find_matching_group(self.logger, session, name, channels_payload)
+        if did_error:
             return None
-
-        group_id = {c['name']: c['id'] for c in resp['groups']}.get(name)
 
         if group_id:
             return (CHANNEL_PREFIX, group_id)
@@ -220,6 +216,7 @@ class SlackNotifyServiceAction(EventAction):
 
 def _find_matching_channel(logger, session, name, original_params):
     # See: https://api.slack.com/methods/channels.list
+    # WARNING: This function does not do any handling for rate limiting.
     did_error = False
 
     next_params = copy.deepcopy(original_params)
@@ -236,6 +233,39 @@ def _find_matching_channel(logger, session, name, original_params):
             return None, did_error
 
         for c in resp['channels']:
+            if c['name'] == name:
+                return c['id'], did_error
+
+        next_cursor = resp.get('response_metadata', {}).get('next_cursor')
+        if next_cursor is None:
+            next_params = None
+        else:
+            # NOTE: This intentionally modifies `next_params` in place.
+            next_params['cursor'] = next_cursor
+
+    return None, did_error
+
+
+def _find_matching_group(logger, session, name, original_params):
+    # See: https://api.slack.com/methods/groups.list
+    # WARNING: This function does not do any handling for rate limiting.
+    # NOTE: This is mostly copied from `_find_matching_channel`.
+    did_error = False
+
+    next_params = copy.deepcopy(original_params)
+    # NOTE: Prefer a bounded `for` loop over a `while` loop.
+    for _ in range(_MAX_ITERATIONS):
+        if next_params is None:
+            break
+
+        resp = session.get('https://slack.com/api/groups.list', params=next_params)
+        resp = resp.json()
+        if not resp.get('ok'):
+            logger.info('rule.slack.group_list_failed', extra={'error': resp.get('error')})
+            did_error = True
+            return None, did_error
+
+        for c in resp['groups']:
             if c['name'] == name:
                 return c['id'], did_error
 
